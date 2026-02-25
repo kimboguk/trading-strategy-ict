@@ -47,22 +47,33 @@ def parse_histdata_csv(filepath: str) -> pd.DataFrame:
         filepath,
         sep=';',
         header=None,
-        names=['datetime', 'open', 'high', 'low', 'close', 'volume'],
-        dtype={
-            'datetime': str,
-            'open': float,
-            'high': float,
-            'low': float,
-            'close': float,
-            'volume': int,
-        },
+        dtype=str,
+        on_bad_lines='skip',
     )
 
-    # 빈 컬럼 제거 (HistData는 마지막에 빈 필드가 있을 수 있음)
+    # 빈 컬럼 제거 (trailing semicolon → 빈 마지막 컬럼)
     df = df.dropna(axis=1, how='all')
+
+    # 첫 5~6개 컬럼만 사용 (위치 기반)
+    if len(df.columns) >= 6:
+        df = df.iloc[:, :6]
+        df.columns = ['datetime', 'open', 'high', 'low', 'close', 'volume']
+    elif len(df.columns) == 5:
+        df.columns = ['datetime', 'open', 'high', 'low', 'close']
+        df['volume'] = '0'
+    else:
+        return pd.DataFrame(columns=['time', 'open', 'high', 'low', 'close', 'tick_volume'])
+
+    # 비데이터 행 제거 (저작권 행 등)
+    df = df[df['datetime'].str.strip().str.match(r'^\d{8}\s+\d{6}$', na=False)]
 
     # datetime 파싱: "20120201 000000" → datetime
     df['time'] = pd.to_datetime(df['datetime'].str.strip(), format='%Y%m%d %H%M%S')
+
+    # 숫자 컬럼 변환
+    for col in ['open', 'high', 'low', 'close']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0).astype(int)
 
     # EST → UTC 변환 (EST = UTC-5, HistData는 DST 없음)
     df['time'] = df['time'] + pd.Timedelta(hours=5)
@@ -175,7 +186,7 @@ def main():
     parser.add_argument(
         "--symbol",
         required=True,
-        choices=["EURUSD", "USDJPY", "EURJPY"],
+        choices=["EURUSD", "USDJPY", "EURJPY", "XAUUSD"],
         help="거래 심볼",
     )
     parser.add_argument("--convert", action="store_true", help="ZIP → CSV 변환")

@@ -348,7 +348,7 @@ def main():
         "--symbol",
         type=str,
         default="EURUSD",
-        choices=["EURUSD", "USDJPY", "EURJPY"],
+        choices=["EURUSD", "USDJPY", "EURJPY", "XAUUSD"],
         help="거래 심볼 (기본: EURUSD)"
     )
     parser.add_argument(

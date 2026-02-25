@@ -25,6 +25,12 @@ SYMBOLS = {
         "commission_pips": 0.3,
         "sl_buffer_pips": 0.01,
     },
+    "XAUUSD": {
+        "pip_size": 0.10,           # Gold: 1 pip = $0.10
+        "spread_pips": 3.0,         # ~$0.30 spread
+        "commission_pips": 0.7,
+        "sl_buffer_pips": 0.10,
+    },
 }
 
 # 전략 기본 파라미터
