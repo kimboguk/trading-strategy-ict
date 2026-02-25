@@ -1,0 +1,16 @@
+# 보안 파일 (절대 커밋 금지)
+.env
+
+# 데이터 및 출력 디렉토리
+data/
+outputs/
+
+# Python 캐시
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 가상환경
+venv/
+.venv/
+env/
