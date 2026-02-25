@@ -351,6 +351,15 @@ def main():
         choices=["EURUSD", "USDJPY", "EURJPY"],
         help="거래 심볼 (기본: EURUSD)"
     )
+    parser.add_argument(
+        "--source",
+        type=str,
+        default="csv",
+        choices=["csv", "db"],
+        help="데이터 소스 (csv: CSV 파일, db: PostgreSQL)"
+    )
+    parser.add_argument("--start", type=str, default=None, help="시작일 (YYYY-MM-DD, db 모드)")
+    parser.add_argument("--end", type=str, default=None, help="종료일 (YYYY-MM-DD, db 모드)")
     args = parser.parse_args()
     SYMBOL = args.symbol
 
@@ -360,30 +369,42 @@ def main():
     # 백테스팅 엔진
     engine = BacktestEngine(strategy)
 
-    # 데이터 경로
-    data_file = str(Path(BACKTEST_CONFIG["data_dir"]) / f"{SYMBOL}_M1_data.csv")
+    if args.source == "db":
+        # PostgreSQL에서 데이터 로드
+        from db import Database
+        db = Database()
 
-    # 파일 존재 확인
-    if not Path(data_file).exists():
-        print(f"⚠️  Data file not found: {data_file}")
-        print("\n📝 How to use:")
-        print(f"1. MT5에서 {SYMBOL} M1 데이터를 CSV로 내보내기")
-        print(f"   (fetch_mt5_data.py 사용 가능: python fetch_mt5_data.py --symbol {SYMBOL} --months 3)")
-        print(f"2. 파일을 {data_file} 경로에 저장")
-        print("3. 컬럼 형식: time, open, high, low, close, tick_volume")
-        print("4. 이 스크립트 다시 실행")
+        start = datetime.strptime(args.start, "%Y-%m-%d") if args.start else None
+        end = datetime.strptime(args.end, "%Y-%m-%d") if args.end else None
 
-        # 샘플 데이터 생성 (테스트용)
-        print("\n📊 샘플 데이터로 데모 실행 중...")
-        sample_data = create_sample_data()
-        sample_path = str(Path(BACKTEST_CONFIG["output_dir"]) / f"sample_{SYMBOL}_M1.csv")
-        sample_data.to_csv(sample_path, index=False)
-        print(f"✓ Sample data created: {sample_path}")
+        print(f"Loading {SYMBOL} from PostgreSQL...")
+        if start:
+            print(f"  Start: {args.start}")
+        if end:
+            print(f"  End: {args.end}")
 
-        data_file = sample_path
+        m1_df = db.query_ohlcv(SYMBOL, start=start, end=end)
 
-    # 백테스트 실행
-    results = engine.run_backtest(data_file)
+        if len(m1_df) == 0:
+            print("No data found in DB. Run init_db.py --import-csv or fetch_histdata.py first.")
+            return
+
+        # DB 데이터로 백테스트 (CSV 파일 대신 DataFrame 직접 전달)
+        data_file = str(Path(BACKTEST_CONFIG["output_dir"]) / f"_tmp_{SYMBOL}_db.csv")
+        m1_df.to_csv(data_file, index=False)
+        results = engine.run_backtest(data_file)
+
+    else:
+        # CSV 파일에서 데이터 로드 (기존 동작)
+        data_file = str(Path(BACKTEST_CONFIG["data_dir"]) / f"{SYMBOL}_M1_data.csv")
+
+        if not Path(data_file).exists():
+            print(f"Data file not found: {data_file}")
+            print(f"\nUse: python fetch_mt5_data.py --symbol {SYMBOL} --months 3")
+            print(f"Or:  python backtest_ob_fvg.py --symbol {SYMBOL} --source db")
+            return
+
+        results = engine.run_backtest(data_file)
 
     # 결과 저장
     engine.save_trades_csv()

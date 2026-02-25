@@ -5,6 +5,10 @@
 data/
 outputs/
 
+# HistData 원본/변환 데이터
+data/histdata_raw/
+data/histdata_csv/
+
 # Python 캐시
 __pycache__/
 *.py[cod]
