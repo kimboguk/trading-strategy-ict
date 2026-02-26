@@ -38,14 +38,20 @@ class BacktestEngine:
         self,
         strategy: OrderBlockFVGStrategy,
         max_bars_per_trade: int = None,
+        m15_lookback: int = None,
+        m1_lookback: int = None,
     ):
         """
         Args:
             strategy: OrderBlockFVGStrategy 인스턴스
             max_bars_per_trade: 최대 홀딩 바 수 (기본: config.py의 STRATEGY_DEFAULTS)
+            m15_lookback: M15 윈도우 크기 (기본: config.py)
+            m1_lookback: M1 윈도우 크기 (기본: config.py)
         """
         self.strategy = strategy
         self.max_bars_per_trade = max_bars_per_trade if max_bars_per_trade is not None else STRATEGY_DEFAULTS["max_bars_per_trade"]
+        self.m15_lookback = m15_lookback if m15_lookback is not None else STRATEGY_DEFAULTS.get("m15_lookback", 50)
+        self.m1_lookback = m1_lookback if m1_lookback is not None else STRATEGY_DEFAULTS.get("m1_lookback", 3)
         self.trades: List[Dict] = []
         self.pip_size = strategy.pip_size  # 심볼별 pip_size 사용
     
@@ -80,49 +86,75 @@ class BacktestEngine:
         
         return m15_df
     
-    def run_backtest(self, m1_csv: str) -> Dict:
+    def run_backtest(self, m1_data) -> Dict:
         """
         백테스팅 실행
-        
+
         Args:
-            m1_csv: M1 데이터 CSV 파일 경로
-        
+            m1_data: M1 데이터 CSV 파일 경로 (str) 또는 DataFrame
+
         Returns:
             성과 분석 결과
         """
-        print(f"📊 Loading data from {m1_csv}...")
-        m1_df = self.load_data(m1_csv)
-        print(f"✓ Loaded {len(m1_df)} M1 bars")
-        
+        if isinstance(m1_data, pd.DataFrame):
+            m1_df = m1_data.copy()
+            m1_df['time'] = pd.to_datetime(m1_df['time'])
+            m1_df = m1_df.sort_values('time').reset_index(drop=True)
+            print(f"✓ Loaded {len(m1_df):,} M1 bars (DataFrame)")
+        else:
+            print(f"Loading data from {m1_data}...")
+            m1_df = self.load_data(m1_data)
+            print(f"✓ Loaded {len(m1_df):,} M1 bars")
+
         # M15 생성
         m15_df = self.aggregate_to_m15(m1_df)
-        print(f"✓ Generated {len(m15_df)} M15 bars")
-        
+        print(f"✓ Generated {len(m15_df):,} M15 bars")
+
         self.trades = []
         active_trade = None
-        
-        print(f"\n🚀 Starting backtest...")
+
+        # M15 시간 인덱스 (searchsorted용 numpy 배열)
+        m15_times = m15_df['time'].values  # numpy datetime64 배열
+
+        total_bars = len(m1_df)
+        progress_step = max(1, total_bars // 20)  # 5% 단위 진행률
+
+        print(f"\nStarting backtest ({total_bars:,} bars)...")
         print("=" * 80)
-        
-        # 각 M1 봉마다 실행
-        for i in range(1, len(m1_df)):
+
+        # 각 M1 봉마다 실행 (고정 윈도우, O(1) per iteration)
+        for i in range(self.m1_lookback, total_bars):
             m1_current = m1_df.iloc[i]
             m1_time = m1_current['time']
-            
-            # M15 바 선택 (현재 M1의 시간에 해당하는 M15)
-            m15_floor = m1_time.floor('15min')
-            m15_bars = m15_df[m15_df['time'] <= m15_floor].copy()
-            
-            if len(m15_bars) < 2:
+
+            # 진행률 표시 (5% 단위)
+            if i % progress_step == 0:
+                pct = i / total_bars * 100
+                print(f"  [{pct:5.1f}%] {m1_time.strftime('%Y-%m-%d')} | trades: {len(self.trades)}")
+
+            # M15 인덱스 탐색: O(log m) binary search
+            m15_floor = np.datetime64(m1_time.floor('15min'))
+            m15_idx = np.searchsorted(m15_times, m15_floor, side='right') - 1
+
+            if m15_idx < 1:  # 최소 2개 M15 바 필요
                 continue
-            
-            # 현재까지의 M1 바
-            m1_bars = m1_df.iloc[:i+1].copy()
-            
+
+            # M15 고정 윈도우 슬라이스 (복사 없음, O(1))
+            m15_start = max(0, m15_idx - self.m15_lookback + 1)
+            m15_bars = m15_df.iloc[m15_start:m15_idx + 1]
+
+            # M1 고정 윈도우 슬라이스 (복사 없음, O(1))
+            m1_start = max(0, i - self.m1_lookback + 1)
+            m1_bars = m1_df.iloc[m1_start:i + 1]
+
             # 1. 활성 포지션이 없으면 신호 탐지
             if active_trade is None:
-                signal = self.strategy.get_entry_signal(m15_bars, m1_bars)
-                
+                # compositor가 있으면 get_composite_signal, 없으면 get_entry_signal
+                if hasattr(self.strategy, 'get_composite_signal'):
+                    signal = self.strategy.get_composite_signal(m15_bars, m1_bars)
+                else:
+                    signal = self.strategy.get_entry_signal(m15_bars, m1_bars)
+
                 if signal is not None:
                     active_trade = {
                         'entry_time': signal['entry_time'],
@@ -134,18 +166,18 @@ class BacktestEngine:
                         'entry_bar_idx': i,
                         'bars_held': 0
                     }
-                    print(f"\n✓ ENTRY @ {m1_time.strftime('%Y-%m-%d %H:%M')} | "
+                    print(f"\n  ENTRY @ {m1_time.strftime('%Y-%m-%d %H:%M')} | "
                           f"{self.strategy.format_signal(signal)}")
-            
+
             # 2. 활성 포지션이 있으면 청산 규칙 확인
             if active_trade is not None:
                 active_trade['bars_held'] = i - active_trade['entry_bar_idx']
                 exit_price = m1_current['close']
                 high = m1_current['high']
                 low = m1_current['low']
-                
+
                 exit_signal = None
-                
+
                 # SL 확인 (우선순위 1)
                 if active_trade['signal'] == 1:  # BUY
                     if low <= active_trade['stop_loss']:
@@ -155,7 +187,7 @@ class BacktestEngine:
                     if high >= active_trade['stop_loss']:
                         exit_price = active_trade['stop_loss']
                         exit_signal = 'SL'
-                
+
                 # TP 확인 (우선순위 2)
                 if exit_signal is None:
                     if active_trade['signal'] == 1:  # BUY
@@ -166,11 +198,11 @@ class BacktestEngine:
                         if low <= active_trade['take_profit']:
                             exit_price = active_trade['take_profit']
                             exit_signal = 'TP'
-                
+
                 # 최대 홀딩 바 초과 (우선순위 3)
                 if exit_signal is None and active_trade['bars_held'] >= self.max_bars_per_trade:
                     exit_signal = 'TIMEOUT'
-                
+
                 # 청산 실행
                 if exit_signal is not None:
                     gross_pips, net_pips, _ = self.strategy.calculate_pnl(
@@ -179,7 +211,7 @@ class BacktestEngine:
                         active_trade['signal'],
                         active_trade['risk_pips']
                     )
-                    
+
                     trade_record = {
                         'entry_time': active_trade['entry_time'],
                         'exit_time': m1_time,
@@ -195,21 +227,21 @@ class BacktestEngine:
                         'exit_reason': exit_signal,
                         'profit_loss': 'WIN' if net_pips > 0 else 'LOSS'
                     }
-                    
+
                     self.trades.append(trade_record)
-                    
-                    print(f"✗ EXIT @ {m1_time.strftime('%Y-%m-%d %H:%M')} | "
+
+                    print(f"  EXIT  @ {m1_time.strftime('%Y-%m-%d %H:%M')} | "
                           f"{exit_signal} @ {exit_price:.5f} | "
                           f"P&L: {net_pips:+.2f}p (gross {gross_pips:+.2f}p)")
-                    
+
                     active_trade = None
-        
+
         print("\n" + "=" * 80)
         print(f"✓ Backtest completed | Total trades: {len(self.trades)}")
-        
+
         # 성과 분석
         results = self.analyze_performance()
-        
+
         return results
     
     def analyze_performance(self) -> Dict:
@@ -360,11 +392,30 @@ def main():
     )
     parser.add_argument("--start", type=str, default=None, help="시작일 (YYYY-MM-DD, db 모드)")
     parser.add_argument("--end", type=str, default=None, help="종료일 (YYYY-MM-DD, db 모드)")
+    parser.add_argument("--compositor", action="store_true", help="SignalCompositor 사용")
+    parser.add_argument("--rr", type=float, default=None, help="손익비 오버라이드")
+    parser.add_argument("--sl-tf", type=str, default=None, choices=["M1", "M15"], help="SL 타임프레임 오버라이드")
     args = parser.parse_args()
     SYMBOL = args.symbol
 
-    # 전략 초기화 (config.py의 기본값 사용)
-    strategy = OrderBlockFVGStrategy(symbol=SYMBOL)
+    # 전략 파라미터 오버라이드
+    strategy_kwargs = {}
+    if args.rr is not None:
+        strategy_kwargs['risk_reward_ratio'] = args.rr
+    if args.sl_tf is not None:
+        strategy_kwargs['sl_timeframe'] = args.sl_tf
+
+    # 전략 초기화 (compositor 또는 기본 전략)
+    if args.compositor:
+        from signal_compositor import SignalCompositor
+        strategy = SignalCompositor(symbol=SYMBOL, **strategy_kwargs)
+        print(f"Mode: SignalCompositor (threshold={strategy.threshold})")
+    else:
+        strategy = OrderBlockFVGStrategy(symbol=SYMBOL, **strategy_kwargs)
+        print(f"Mode: OB+FVG only")
+
+    print(f"Symbol: {SYMBOL} | RR: {strategy.strategy.risk_reward_ratio if hasattr(strategy, 'strategy') else strategy.risk_reward_ratio}"
+          f" | SL: {strategy.strategy.sl_timeframe if hasattr(strategy, 'strategy') else strategy.sl_timeframe}")
 
     # 백테스팅 엔진
     engine = BacktestEngine(strategy)
@@ -389,10 +440,8 @@ def main():
             print("No data found in DB. Run init_db.py --import-csv or fetch_histdata.py first.")
             return
 
-        # DB 데이터로 백테스트 (CSV 파일 대신 DataFrame 직접 전달)
-        data_file = str(Path(BACKTEST_CONFIG["output_dir"]) / f"_tmp_{SYMBOL}_db.csv")
-        m1_df.to_csv(data_file, index=False)
-        results = engine.run_backtest(data_file)
+        # DB 데이터를 DataFrame으로 직접 전달 (CSV 중간 저장 불필요)
+        results = engine.run_backtest(m1_df)
 
     else:
         # CSV 파일에서 데이터 로드 (기존 동작)

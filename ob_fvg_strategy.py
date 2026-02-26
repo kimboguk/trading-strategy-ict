@@ -26,18 +26,20 @@ class OrderBlockFVGStrategy:
         sl_buffer_pips: float = None,
         allowed_hours: set = None,
         require_fvg_confirm: bool = None,
+        sl_timeframe: str = None,
     ):
         """
         전략 초기화
 
         Args:
-            symbol: 거래 심볼 (EURUSD / USDJPY / EURJPY)
+            symbol: 거래 심볼 (EURUSD / USDJPY / EURJPY / XAUUSD)
             risk_reward_ratio: 손익비 (기본: config.py의 STRATEGY_DEFAULTS)
             spread_pips: 스프레드 (기본: config.py의 SYMBOLS 값)
             commission_pips: 거래 비용 (기본: config.py의 SYMBOLS 값)
             sl_buffer_pips: SL 버퍼 (기본: config.py의 SYMBOLS 값)
             allowed_hours: 거래 허용 시간 (기본: {0,1,8,9,16,17})
             require_fvg_confirm: OB+FVG 동시 확인 여부 (기본: True)
+            sl_timeframe: SL 기준 타임프레임 ("M1" 또는 "M15", 기본: config.py)
         """
         sym_cfg = SYMBOLS.get(symbol, SYMBOLS["EURUSD"])
 
@@ -50,6 +52,7 @@ class OrderBlockFVGStrategy:
         self.sl_buffer_pips = sl_buffer_pips if sl_buffer_pips is not None else sym_cfg["sl_buffer_pips"]
         self.allowed_hours = allowed_hours if allowed_hours is not None else STRATEGY_DEFAULTS["allowed_hours"]
         self.require_fvg_confirm = require_fvg_confirm if require_fvg_confirm is not None else STRATEGY_DEFAULTS["require_fvg_confirm"]
+        self.sl_timeframe = sl_timeframe if sl_timeframe is not None else STRATEGY_DEFAULTS.get("sl_timeframe", "M1")
     
     def is_trading_hour(self, timestamp: pd.Timestamp) -> bool:
         """거래 허용 시간인지 확인"""
@@ -202,14 +205,17 @@ class OrderBlockFVGStrategy:
         entry_time = m1_bars.iloc[-1]['time']
         entry_price = m1_bars.iloc[-1]['close']
         
-        # SL 계산: M1 직전 봉의 저/고가 ± 0.0001
-        m1_prev = m1_bars.iloc[-2]
-        
+        # SL 계산: sl_timeframe에 따라 M1 또는 M15 직전 봉 기준
+        if self.sl_timeframe == "M15" and len(m15_bars) >= 2:
+            sl_ref_bar = m15_bars.iloc[-2]  # M15 직전 봉 (넓은 SL, 노이즈 방지)
+        else:
+            sl_ref_bar = m1_bars.iloc[-2]   # M1 직전 봉 (기존 동작)
+
         if signal == 1:  # BUY
-            stop_loss = m1_prev['low'] - self.sl_buffer_pips
+            stop_loss = sl_ref_bar['low'] - self.sl_buffer_pips
             risk_pips = (entry_price - stop_loss) / self.pip_size
         else:  # SELL
-            stop_loss = m1_prev['high'] + self.sl_buffer_pips
+            stop_loss = sl_ref_bar['high'] + self.sl_buffer_pips
             risk_pips = (stop_loss - entry_price) / self.pip_size
 
         # SL이 진입가 반대편에 있는 invalid 설정 거부

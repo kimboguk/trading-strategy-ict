@@ -426,9 +426,9 @@ class MT5LiveTrader:
                         
                         # 프로피트 모니터링 (정보용)
                         current_pips = (
-                            (price - self.active_trade['entry_price']) / 0.0001
+                            (price - self.active_trade['entry_price']) / self.strategy.pip_size
                             if self.active_trade['direction'] == 1
-                            else (self.active_trade['entry_price'] - price) / 0.0001
+                            else (self.active_trade['entry_price'] - price) / self.strategy.pip_size
                         )
                         
                         logger.info(f"📍 포지션 모니터링 | 현재 P&L: {current_pips:+.2f}p")

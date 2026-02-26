@@ -39,6 +39,23 @@ STRATEGY_DEFAULTS = {
     "max_bars_per_trade": 100,      # 최대 홀딩 바 수
     "allowed_hours": {0, 1, 8, 9, 16, 17},  # 런던+미국 세션 (UTC)
     "require_fvg_confirm": True,    # OB+FVG 동시 확인 여부
+    "sl_timeframe": "M15",          # SL 기준 타임프레임 ("M1" 또는 "M15")
+    # 백테스트 윈도우 크기
+    "m15_lookback": 50,             # M15 바 윈도우 (Phase 2 BOS/Liquidity용)
+    "m1_lookback": 3,               # M1 바 윈도우 (FVG 3봉)
+    # Phase 2 모듈 (기본 비활성)
+    "use_compositor": False,        # SignalCompositor 사용 여부
+    "bos_swing_lookback": 20,       # BOS 스윙 탐색 범위 (M15 바)
+    "bos_swing_strength": 5,        # 스윙 포인트 강도 (양쪽 N바)
+    "liquidity_lookback": 50,       # Liquidity 탐색 범위 (M15 바)
+    "liquidity_tolerance_pips": 3.0, # Equal High/Low 허용 오차 (핍)
+    "compositor_threshold": 0.6,    # Compositor 최소 스코어 (0~1)
+    "compositor_weights": {         # 가중치
+        "ob_fvg": 0.4,
+        "bos": 0.3,
+        "choch": 0.2,
+        "liquidity": 0.1,
+    },
 }
 
 # 백테스트 설정
